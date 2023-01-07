@@ -1,1 +1,0 @@
-export { Mono_5x7 } from './mono_5x7';
