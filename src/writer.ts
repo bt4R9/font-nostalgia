@@ -1,6 +1,7 @@
 import { Color } from "./utils/color";
 import type { Font, IFontGrid } from "./font";
 import { FontBlock } from "./font";
+import { Text } from './text';
 import { toHexString } from "./utils/hex";
 
 export interface WriterParams {
@@ -44,30 +45,6 @@ export class Writer {
     this.font = params.font;
   }
 
-  private group(text: number[]) {
-    const { font } = this;
-  
-    const groups: number[][] = [];
-    const buffer: number[] = [];
-
-    for (let i = 0; i < text.length + 1; i++) {
-      if (i === text.length) {
-        groups.push(buffer);
-      } else if (text[i] === font.separator_symbol) {
-        groups.push(buffer.slice());
-        buffer.length = 0;
-      } else if (text[i] === font.new_line_symbol) {
-        groups.push(buffer.slice());
-        groups.push([font.new_line_symbol]);
-        buffer.length = 0;
-      } else {
-        buffer.push(text[i]);
-      }
-    }
-
-    return groups;
-  }
-
   private clear(color: number | undefined, area: AreaParams): void {
     if (typeof color !== 'number') {
       return;
@@ -80,7 +57,7 @@ export class Writer {
     context.fillRect(area.x, area.y, area.width, area.height);
   }
 
-  private * _write(text: number[], {
+  private * _write(rawText: string, {
     area,
     size: _size,
     gap: _gap,
@@ -91,6 +68,8 @@ export class Writer {
     inter_letter_width: _inter_letter_width,
     word_break = true
   }: WriteParams) {
+    const text = new Text(rawText);
+
     this.clear(clear_background_color, area);
 
     const { font } = this;    
@@ -115,38 +94,48 @@ export class Writer {
     const offset_y = font.symbol_height * (size + gap) + inter_letter_height;
 
     const fontColor = new Color(color);
-    const groups = this.group(text);
 
-    for (const group of groups) {
-      const group_width = group.length * final_symbol_width + (inter_letter_width * group.length - 1);
-
-      const in_area_x = dx + group_width < end_x;
-
-      if (!in_area_x) {
-        if (!word_break) {
-          console.warn(`The text is too long.`);
-          break;
-        }
-
-        dx = start_x;
-        dy += offset_y;
-      }
-
-      const in_area_y = dy + final_symbol_height < end_y;
-
-      if (!in_area_y) {
-        console.warn(`Not enough space in the area to insert a group [${group.map(toHexString)}].`);
-        break;
-      }
-
-      if (group.length === 1 && group[0] === font.new_line_symbol) {
+    for (const entity of text.data) {
+      if (entity.type === 'new_line') {
         dx = start_x;
         dy += offset_y;
         continue;
       }
 
-      for (const symbol of group) {
-        yield this.writeSymbol(symbol, {
+      if (entity.type === 'chars') {
+        const entity_width = entity.chars.length * final_symbol_width + (inter_letter_width * entity.chars.length - 1);
+        const in_area_x = dx + entity_width < end_x;
+
+        if (!in_area_x) {
+          if (!word_break) {
+            console.warn(`The text is too long.`);
+            break;
+          }
+
+          dx = start_x;
+          dy += offset_y;
+        }
+
+        const in_area_y = dy + final_symbol_height < end_y;
+
+        if (!in_area_y) {
+          console.warn(`Not enough space in the area to insert a group [${entity.chars.map(toHexString)}].`);
+          break;
+        }
+
+        for (const symbol of entity.chars) {
+          yield this.writeSymbol(symbol, {
+            x: dx,
+            y: dy,
+            color: fontColor,
+            size,
+            gap,
+          });
+
+          dx += offset_x;
+        }
+
+        yield this.writeSymbol(font.separator_symbol, {
           x: dx,
           y: dy,
           color: fontColor,
@@ -156,16 +145,6 @@ export class Writer {
 
         dx += offset_x;
       }
-
-      yield this.writeSymbol(font.separator_symbol, {
-        x: dx,
-        y: dy,
-        color: fontColor,
-        size,
-        gap,
-      });
-
-      dx += offset_x;
     }
   }
 
@@ -175,7 +154,7 @@ export class Writer {
     let grid: IFontGrid = font.ascii_table[symbol];
 
     if (symbol in font.ascii_table === false) {
-      console.warn(`Symbol [0x${toHexString(symbol)}] is not supported in the "${font.name}" font.`);
+      console.warn(`Symbol [${toHexString(symbol)}] is not supported in the "${font.name}" font.`);
       grid = font.backup_symbol_grid;
     }
 
@@ -207,7 +186,7 @@ export class Writer {
     }
   }
 
-  animate(text: number[], params: WriteParams, { fps = 60 }: { fps?: number } = {}) {
+  animate(text: string, params: WriteParams, { fps = 60 }: { fps?: number } = {}) {
     return new Promise<void>((resolve) => {
       const generator = this._write(text, params);
       const speed = 1000 / fps;
@@ -239,11 +218,11 @@ export class Writer {
     });
   }
 
-  write(text: number[], params: WriteParams) {
-    const generator = this._write(text, params);
+  write(text: string, params: WriteParams) {
+    const iterator = this._write(text, params);
 
-    while (true) {
-      const next = generator.next();
+    while (iterator.next) {
+      const next = iterator.next();
 
       if (next.done) {
         break;
